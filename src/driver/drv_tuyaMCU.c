@@ -204,6 +204,12 @@ static int g_baudRate = 9600;
 // global mcu time
 static int g_tuyaNextRequestDelay;
 static bool g_sensorMode = 0;
+// Command used for DP writes. 0x06 (SET_DP) by default; low-power TuyaMCU
+// ("serial port protocol" for battery devices) expects 0x09 (send module command).
+static byte g_tuyaMCU_setDpCmd = TUYA_CMD_SET_DP;
+byte TuyaMCU_GetSetDpCommand() {
+	return g_tuyaMCU_setDpCmd;
+}
 
 // Flag to prevent automatic sending during boot/initialization
 static bool g_tuyaMCU_allowAutomaticSending = true;
@@ -501,7 +507,7 @@ void TuyaMCU_SendStateInternal(uint8_t id, uint8_t type, void* value, int dataLe
 	payload_len = TuyaMCU_AppendStateInternal(g_tuyaMCUpayloadBuffer, g_tuyaMCUpayloadBufferSize,
 		payload_len, id, type, value, dataLen);
 
-	TuyaMCU_SendCommandWithData(TUYA_CMD_SET_DP, g_tuyaMCUpayloadBuffer, payload_len);
+	TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
 }
 void TuyaMCU_SendTwoVals(byte idA, int valA, byte idB, int valB)
 {
@@ -521,7 +527,7 @@ void TuyaMCU_SendTwoVals(byte idA, int valA, byte idB, int valB)
 	payload_len = TuyaMCU_AppendStateInternal(g_tuyaMCUpayloadBuffer, g_tuyaMCUpayloadBufferSize,
 		payload_len, idB, DP_TYPE_VALUE, swap, 4);
 
-	TuyaMCU_SendCommandWithData(TUYA_CMD_SET_DP, g_tuyaMCUpayloadBuffer, payload_len);
+	TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
 }
 void TuyaMCU_SendState(uint8_t id, uint8_t type, uint8_t* value)
 {
@@ -591,7 +597,7 @@ void TuyaMCU_SendHexString(uint8_t id, char data[]) {
 
 	convertHexStringtoBytes(&g_tuyaMCUpayloadBuffer[4], data, len);
 
-	TuyaMCU_SendCommandWithData(TUYA_CMD_SET_DP, g_tuyaMCUpayloadBuffer, payload_len);
+	TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
 }
 
 void TuyaMCU_SendString(uint8_t id, char data[]) {
@@ -606,7 +612,7 @@ void TuyaMCU_SendString(uint8_t id, char data[]) {
 		g_tuyaMCUpayloadBuffer[4 + i] = data[i];
 	}
 
-	TuyaMCU_SendCommandWithData(TUYA_CMD_SET_DP, g_tuyaMCUpayloadBuffer, payload_len);
+	TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
 }
 
 void TuyaMCU_SendRaw(uint8_t id, char data[]) {
@@ -630,7 +636,7 @@ void TuyaMCU_SendRaw(uint8_t id, char data[]) {
 
 	convertHexStringtoBytes(&g_tuyaMCUpayloadBuffer[4], beginPos, len);
 
-	TuyaMCU_SendCommandWithData(TUYA_CMD_SET_DP, g_tuyaMCUpayloadBuffer, payload_len);
+	TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
 }
 
 /*
@@ -2273,6 +2279,23 @@ commandResult_t TuyaMCU_FakePacket(const void* context, const char* cmd, const c
 	return CMD_RES_OK;
 }
 
+commandResult_t Cmd_TuyaMCU_SetDpCommand(const void* context, const char* cmd, const char* args, int cmdFlags) {
+	int c;
+
+	Tokenizer_TokenizeString(args, 0);
+	if (Tokenizer_GetArgsCount() < 1) {
+		addLogAdv(LOG_INFO, LOG_FEATURE_TUYAMCU, "SetDpCommand: current 0x%02X", g_tuyaMCU_setDpCmd);
+		return CMD_RES_NOT_ENOUGH_ARGUMENTS;
+	}
+	c = Tokenizer_GetArgInteger(0);
+	if (c <= 0 || c > 0xFF) {
+		addLogAdv(LOG_INFO, LOG_FEATURE_TUYAMCU, "SetDpCommand: bad command byte");
+		return CMD_RES_BAD_ARGUMENT;
+	}
+	g_tuyaMCU_setDpCmd = (byte)c;
+	addLogAdv(LOG_INFO, LOG_FEATURE_TUYAMCU, "SetDpCommand: DP writes now use 0x%02X", g_tuyaMCU_setDpCmd);
+	return CMD_RES_OK;
+}
 commandResult_t Cmd_TuyaMCU_SetBatteryAckDelay(const void* context, const char* cmd, const char* args, int cmdFlags) {
 	int delay;
 
@@ -2771,6 +2794,7 @@ void TuyaMCU_Init()
 {
 	g_resetWiFiEvents = 0;
 	g_tuyaNextRequestDelay = 1;
+	g_tuyaMCU_setDpCmd = TUYA_CMD_SET_DP;
 	g_tuyaBatteryPoweredState = 0;
 	g_tuyaMCUConfirmationsToSend_0x05 = 0;
 	g_tuyaMCUConfirmationsToSend_0x08 = 0;
@@ -2870,6 +2894,12 @@ void TuyaMCU_Init()
 	//cmddetail:"fn":"Cmd_TuyaMCU_SetBatteryAckDelay","file":"driver/drv_tuyaMCU.c","requires":"",
 	//cmddetail:"examples":""}
 	CMD_RegisterCommand("tuyaMcu_setBatteryAckDelay", Cmd_TuyaMCU_SetBatteryAckDelay, NULL);
+
+	//cmddetail:{"name":"tuyaMcu_setDpCommand","args":"[cmdByte]",
+	//cmddetail:"descr":"Sets the TuyaMCU command byte used to write dpIDs. Default 0x06. Low-power (battery) TuyaMCU devices that ignore 0x06 need 0x09.",
+	//cmddetail:"fn":"Cmd_TuyaMCU_SetDpCommand","file":"driver/drv_tuyaMCU.c","requires":"",
+	//cmddetail:"examples":"tuyaMcu_setDpCommand 0x09"}
+	CMD_RegisterCommand("tuyaMcu_setDpCommand", Cmd_TuyaMCU_SetDpCommand, NULL);
 	
 	//cmddetail:{"name":"tuyaMcu_enableAutoSend","args":"[0/1]",
 	//cmddetail:"descr":"Enable or disable automatic sending of commands to TuyaMCU during boot/initialization. Use 0 to disable, 1 to enable.",

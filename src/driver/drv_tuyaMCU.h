@@ -10,6 +10,7 @@ bool TuyaMCU_IsChannelUsedByTuyaMCU(int channelIndex);
 void TuyaMCU_ForcePublishChannelValues();
 void TuyaMCU_EnableAutomaticSending(bool enable);
 void TuyaMCU_BatteryPoweredMode(bool enable);
+byte TuyaMCU_GetSetDpCommand();
 
 // True once tuyaMcu_setupLED has configured an LED (see #2218).
 bool TuyaMCU_HasLED();

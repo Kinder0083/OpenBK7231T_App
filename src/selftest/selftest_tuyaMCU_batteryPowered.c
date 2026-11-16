@@ -405,8 +405,78 @@ void Test_TuyaMCU_SetDpCommand() {
 	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 05 6D 01 00 01 01 7A");
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 }
+// Writes requested while the low-power handshake is not finished (e.g. retained
+// MQTT values arriving right after connect) must wait, keep only the latest value
+// per dpID, and go out once the MCU accepts states.
+void Test_TuyaMCU_BatteryPowered_PendingWrites() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("startDriver tmSensor", 0);
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 2 val 1", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 6 enum 2", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 102 bool 3", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 106 val 4", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 107 enum 5", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 109 bool 6", 0);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 01 00 00 00");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// product info of the solar PIR siren {"p":"1xupv3vnoeqpslsb","v":"1.0.0"}
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 01 00 24 7B 22 70 22 3A 22 31 78 75 70 76 33 76 6E 6F 65 71 70 73 6C 73 62 22 2C 22 76 22 3A 22 31 2E 30 2E 30 22 7D 23", 0);
+	Sim_RunSeconds(2.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 03 05");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// retained MQTT settings arrive now - MCU is not ready yet
+	CMD_ExecuteCommand("setChannel 4 5", 0);
+	CMD_ExecuteCommand("setChannel 4 30", 0);
+	CMD_ExecuteCommand("setChannel 6 1", 0);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	Sim_RunSeconds(2.0f, false);
+	Sim_RunSeconds(2.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 04 06");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// second ack: MCU now accepts states, pending writes go out, latest value only
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	Sim_RunSeconds(5.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 08 6A 02 00 04 00 00 00 1E 9E");
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6D 01 00 01 01 7D");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// MCU echoes the written value: no resend, only the usual 0x05 ack
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 05 00 08 6A 02 00 04 00 00 00 1E 9A", 0);
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_CHANNEL(4, 30);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 05 00 01 00 05");
+	Sim_RunSeconds(5.0f, false);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// MCU reports a value changed locally on the device: channel follows, nothing is sent back
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 05 00 05 6B 04 00 01 01 7A", 0);
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_CHANNEL(5, 1);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 05 00 01 00 05");
+	Sim_RunSeconds(5.0f, false);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// after the handshake, writes go out directly
+	CMD_ExecuteCommand("setChannel 5 2", 0);
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 02 7F");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
 void Test_TuyaMCU_BatteryPowered() {
 	Test_TuyaMCU_SetDpCommand();
+	Test_TuyaMCU_BatteryPowered_PendingWrites();
 	Test_TuyaMCU_BatteryPowered_Style2();
 	Test_TuyaMCU_BatteryPowered_Style1();
 	Test_TuyaMCU_BatteryPowered_Style2();
