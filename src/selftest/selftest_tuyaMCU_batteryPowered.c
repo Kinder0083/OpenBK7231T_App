@@ -358,7 +358,55 @@ void Test_TuyaMCU_BatteryPowered_QuerySignalStrength() {
 	// nothing is sent by OBK at that point
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 }
+// Low-power TuyaMCU (Tuya "serial port protocol" for battery devices) uses
+// command 0x09 ("send module command") for DP writes; 0x06 means "get local time" there.
+void Test_TuyaMCU_SetDpCommand() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 106 val 4", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 109 bool 6", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 107 enum 5", 0);
+	SIM_ClearUART();
+
+	// default is unchanged: 0x06
+	CMD_ExecuteCommand("setChannel 4 30", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 08 6A 02 00 04 00 00 00 1E 9B");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	CMD_ExecuteCommand("setChannel 4 5", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 08 6A 02 00 04 00 00 00 05 85");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("setChannel 6 1", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6D 01 00 01 01 7D");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("setChannel 5 2", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 02 7F");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// decimal argument works too, and switches back
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 6", 0);
+	CMD_ExecuteCommand("setChannel 6 0", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 05 6D 01 00 01 00 79");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	// driver restart resets to default 0x06
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 109 bool 6", 0);
+	SIM_ClearUART();
+	CMD_ExecuteCommand("setChannel 6 1", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 05 6D 01 00 01 01 7A");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
 void Test_TuyaMCU_BatteryPowered() {
+	Test_TuyaMCU_SetDpCommand();
 	Test_TuyaMCU_BatteryPowered_Style2();
 	Test_TuyaMCU_BatteryPowered_Style1();
 	Test_TuyaMCU_BatteryPowered_Style2();
