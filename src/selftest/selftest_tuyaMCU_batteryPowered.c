@@ -532,6 +532,57 @@ void Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent() {
 	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 00 7D");
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 }
+static void BatteryPowered_SirenHandshakeUntilStates() {
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 01 00 00 00");
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 01 00 24 7B 22 70 22 3A 22 31 78 75 70 76 33 76 6E 6F 65 71 70 73 6C 73 62 22 2C 22 76 22 3A 22 31 2E 30 2E 30 22 7D 23", 0);
+	Sim_RunSeconds(2.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 03 05");
+}
+// A write sent directly while older queued writes are still draining must not be
+// overwritten afterwards by a stale queued value of the same dpID.
+void Test_TuyaMCU_BatteryPowered_StaleQueuedWrite() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("startDriver tmSensor", 0);
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 106 val 4", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 107 enum 5", 0);
+	BatteryPowered_SirenHandshakeUntilStates();
+
+	CMD_ExecuteCommand("setChannel 4 5", 0);
+	CMD_ExecuteCommand("setChannel 5 2", 0);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	Sim_RunSeconds(4.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 04 06");
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	// first queued write (dpID 106) goes out, 107=2 still waits
+	Sim_RunSeconds(1.5f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 08 6A 02 00 04 00 00 00 05 85");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+	// user changes the mode now: sent directly
+	CMD_ExecuteCommand("setChannel 5 0", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 00 7D");
+	// the stale queued 107=2 must never follow
+	Sim_RunSeconds(6.0f, false);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
+// tmSensor devices that did not opt into 0x09 keep the previous behaviour:
+// writes are sent at once with 0x06, no queue.
+void Test_TuyaMCU_BatteryPowered_NoSetDpCommandUnchanged() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("startDriver tmSensor", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 106 val 4", 0);
+	SIM_ClearUART();
+	CMD_ExecuteCommand("setChannel 4 30", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 08 6A 02 00 04 00 00 00 1E 9B");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
 void Test_TuyaMCU_BatteryPowered() {
 	Test_TuyaMCU_BatteryPowered_Style2();
 	Test_TuyaMCU_BatteryPowered_Style1();
@@ -549,6 +600,8 @@ void Test_TuyaMCU_BatteryPowered() {
 	Test_TuyaMCU_BatteryPowered_PendingWrites();
 	Test_MQTT_EmptyChannelSetIgnored();
 	Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent();
+	Test_TuyaMCU_BatteryPowered_StaleQueuedWrite();
+	Test_TuyaMCU_BatteryPowered_NoSetDpCommandUnchanged();
 }
 
 #endif
