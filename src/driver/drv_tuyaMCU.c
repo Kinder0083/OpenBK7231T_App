@@ -210,6 +210,12 @@ static byte g_tuyaMCU_setDpCmd = TUYA_CMD_SET_DP;
 byte TuyaMCU_GetSetDpCommand() {
 	return g_tuyaMCU_setDpCmd;
 }
+// Low-power write handling (queue until the MCU accepts states, forward every
+// explicit write) is opt-in: tmSensor running AND tuyaMcu_setDpCommand changed.
+// Other tmSensor devices keep the previous behaviour.
+static bool TuyaMCU_LowPowerWritesEnabled() {
+	return g_tuyaMCU_setDpCmd != TUYA_CMD_SET_DP && DRV_IsRunning("tmSensor");
+}
 
 // Flag to prevent automatic sending during boot/initialization
 static bool g_tuyaMCU_allowAutomaticSending = true;
@@ -539,6 +545,15 @@ static void TuyaMCU_QueuePendingDP(uint8_t id, uint8_t type, const void* value, 
 	memcpy(g_tuyaMCU_pendingDP[freeSlot].data, value, dataLen);
 	addLogAdv(LOG_INFO, LOG_FEATURE_TUYAMCU, "Queued write of dpId %i until MCU accepts states", id);
 }
+// a newer write sent directly supersedes a queued one for the same dpID
+static void TuyaMCU_DropPendingDP(uint8_t id) {
+	int i;
+	for (i = 0; i < TUYAMCU_PENDING_DP_MAX; i++) {
+		if (g_tuyaMCU_pendingDP[i].used && g_tuyaMCU_pendingDP[i].id == id) {
+			g_tuyaMCU_pendingDP[i].used = 0;
+		}
+	}
+}
 static bool TuyaMCU_SendNextPendingDP() {
 	int i;
 	uint16_t payload_len;
@@ -556,10 +571,13 @@ static bool TuyaMCU_SendNextPendingDP() {
 void TuyaMCU_SendStateInternal(uint8_t id, uint8_t type, void* value, int dataLen)
 {
 	uint16_t payload_len = 0;
-	if (DRV_IsRunning("tmSensor") && g_tuyaBatteryPoweredState != TM0_STATE_AWAITING_STATES
-		&& dataLen <= TUYAMCU_PENDING_DP_DATA_MAX) {
-		TuyaMCU_QueuePendingDP(id, type, value, dataLen);
-		return;
+	if (TuyaMCU_LowPowerWritesEnabled()) {
+		if (g_tuyaBatteryPoweredState != TM0_STATE_AWAITING_STATES
+			&& dataLen <= TUYAMCU_PENDING_DP_DATA_MAX) {
+			TuyaMCU_QueuePendingDP(id, type, value, dataLen);
+			return;
+		}
+		TuyaMCU_DropPendingDP(id);
 	}
 	
 	payload_len = TuyaMCU_AppendStateInternal(g_tuyaMCUpayloadBuffer, g_tuyaMCUpayloadBufferSize,
@@ -1257,7 +1275,7 @@ void TuyaMCU_ApplyMapping(tuyaMCUMapping_t* mapping, int dpID, int value) {
 // true when the channel is linked to a dpID of a low-power (tmSensor) TuyaMCU:
 // such writes must always be forwarded, even if the channel already has that value.
 bool TuyaMCU_IsLowPowerChannel(int channel) {
-	return DRV_IsRunning("tmSensor") && TuyaMCU_IsChannelUsedByTuyaMCU(channel);
+	return TuyaMCU_LowPowerWritesEnabled() && TuyaMCU_IsChannelUsedByTuyaMCU(channel);
 }
 bool TuyaMCU_IsChannelUsedByTuyaMCU(int channel) {
 	tuyaMCUMapping_t* mapping;
@@ -1285,7 +1303,7 @@ void TuyaMCU_OnChannelChanged(int channel, int iVal) {
 		iVal = !iVal;
 	}
 
-	if (DRV_IsRunning("tmSensor")) {
+	if (TuyaMCU_LowPowerWritesEnabled()) {
 		// low-power MCU: OBK channel values are not authoritative (they start at 0 on
 		// every wake), so every explicit write is forwarded; only values reported by
 		// the MCU itself must never be echoed back.
