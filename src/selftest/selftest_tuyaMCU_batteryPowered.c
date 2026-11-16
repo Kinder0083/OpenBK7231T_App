@@ -533,10 +533,6 @@ void Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent() {
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 }
 void Test_TuyaMCU_BatteryPowered() {
-	Test_MQTT_EmptyChannelSetIgnored();
-	Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent();
-	Test_TuyaMCU_SetDpCommand();
-	Test_TuyaMCU_BatteryPowered_PendingWrites();
 	Test_TuyaMCU_BatteryPowered_Style2();
 	Test_TuyaMCU_BatteryPowered_Style1();
 	Test_TuyaMCU_BatteryPowered_Style2();
@@ -547,6 +543,12 @@ void Test_TuyaMCU_BatteryPowered() {
 	Test_TuyaMCU_BatteryPowered_DPcacheFeature4();
 
 	Test_TuyaMCU_BatteryPowered_QuerySignalStrength();
+
+	// run last: they advance the simulated clock, which shifts the retry phase of the tests above
+	Test_TuyaMCU_SetDpCommand();
+	Test_TuyaMCU_BatteryPowered_PendingWrites();
+	Test_MQTT_EmptyChannelSetIgnored();
+	Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent();
 }
 
 #endif

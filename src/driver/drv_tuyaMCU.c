@@ -1254,6 +1254,11 @@ void TuyaMCU_ApplyMapping(tuyaMCUMapping_t* mapping, int dpID, int value) {
 	g_tuyaMCU_applyingMapping = false;
 }
 
+// true when the channel is linked to a dpID of a low-power (tmSensor) TuyaMCU:
+// such writes must always be forwarded, even if the channel already has that value.
+bool TuyaMCU_IsLowPowerChannel(int channel) {
+	return DRV_IsRunning("tmSensor") && TuyaMCU_IsChannelUsedByTuyaMCU(channel);
+}
 bool TuyaMCU_IsChannelUsedByTuyaMCU(int channel) {
 	tuyaMCUMapping_t* mapping;
 

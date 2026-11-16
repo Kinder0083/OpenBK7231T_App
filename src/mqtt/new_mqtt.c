@@ -708,12 +708,32 @@ int channelSet(obk_mqtt_request_t* request) {
 
 	argument = ((const char*)request->received);
 
+	// an empty payload is what clearing a retained message delivers: ignore it
+	{
+		const char *q = argument;
+		while (*q == ' ' || *q == '	' || *q == '' || *q == '
+') {
+			q++;
+		}
+		if (*q == 0) {
+			addLogAdv(LOG_INFO, LOG_FEATURE_MQTT, "channelSet: empty payload for ch %i ignored", channel);
+			return 1;
+		}
+	}
+
 	if (!wal_strnicmp(argument, "toggle", 6)) {
 		CHANNEL_Toggle(channel);
 	}
 	else {
+		int flags = 0;
 		iValue = atoi(argument);
-		CHANNEL_Set(channel, iValue, 0);
+#if ENABLE_DRIVER_TUYAMCU
+		// low-power TuyaMCU: OBK does not know the MCU value after a wake, forward even "no change"
+		if (TuyaMCU_IsLowPowerChannel(channel)) {
+			flags = CHANNEL_SET_FLAG_FORCE;
+		}
+#endif
+		CHANNEL_Set(channel, iValue, flags);
 	}
 
 	// return 1 to stop processing callbacks here.
