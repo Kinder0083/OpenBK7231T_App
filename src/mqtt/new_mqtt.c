@@ -711,8 +711,7 @@ int channelSet(obk_mqtt_request_t* request) {
 	// an empty payload is what clearing a retained message delivers: ignore it
 	{
 		const char *q = argument;
-		while (*q == ' ' || *q == '	' || *q == '' || *q == '
-') {
+		while (*q == ' ' || *q == 9 || *q == 10 || *q == 13) { // space, tab, LF, CR
 			q++;
 		}
 		if (*q == 0) {
