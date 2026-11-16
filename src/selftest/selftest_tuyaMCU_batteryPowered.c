@@ -389,9 +389,11 @@ void Test_TuyaMCU_SetDpCommand() {
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 
 	// decimal argument works too, and switches back
+	// (not "setChannel 6 0": outside tmSensor mode a write equal to the mapping's
+	// initial prevValue 0 is skipped by design)
 	CMD_ExecuteCommand("tuyaMcu_setDpCommand 6", 0);
-	CMD_ExecuteCommand("setChannel 6 0", 0);
-	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 05 6D 01 00 01 00 79");
+	CMD_ExecuteCommand("setChannel 4 7", 0);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 06 00 08 6A 02 00 04 00 00 00 07 84");
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 
 	// driver restart resets to default 0x06
@@ -474,7 +476,65 @@ void Test_TuyaMCU_BatteryPowered_PendingWrites() {
 	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 02 7F");
 	SELFTEST_ASSERT_HAS_UART_EMPTY();
 }
+// Clearing a retained MQTT value publishes an empty payload on <topic>/<ch>/set:
+// it must not set the channel to 0 (alarm duration 0 s!).
+void Test_MQTT_EmptyChannelSetIgnored() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 106 val 4", 0);
+	CMD_ExecuteCommand("setChannel 4 30", 0);
+	SIM_ClearUART();
+
+	SIM_SendFakeMQTTRawChannelSet(4, "");
+	SELFTEST_ASSERT_CHANNEL(4, 30);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	SIM_SendFakeMQTTRawChannelSet(4, "  ");
+	SELFTEST_ASSERT_CHANNEL(4, 30);
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	SIM_SendFakeMQTTRawChannelSet(4, "20");
+	SELFTEST_ASSERT_CHANNEL(4, 20);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 08 6A 02 00 04 00 00 00 14 94");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
+// On a low-power device channels start at 0 on every wake and some dpIDs are
+// rarely reported, so a retained "0" (e.g. sound on, mode 0) must still be sent.
+void Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent() {
+	SIM_ClearOBK(0);
+	SIM_UART_InitReceiveRingBuffer(1024);
+	CMD_ExecuteCommand("startDriver TuyaMCU", 0);
+	CMD_ExecuteCommand("startDriver tmSensor", 0);
+	CMD_ExecuteCommand("tuyaMcu_setDpCommand 0x09", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 109 bool 6", 0);
+	CMD_ExecuteCommand("linkTuyaMCUOutputToChannel 107 enum 5", 0);
+
+	Sim_RunSeconds(3.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 01 00 00 00");
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 01 00 24 7B 22 70 22 3A 22 31 78 75 70 76 33 76 6E 6F 65 71 70 73 6C 73 62 22 2C 22 76 22 3A 22 31 2E 30 2E 30 22 7D 23", 0);
+	Sim_RunSeconds(2.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 03 05");
+
+	// channels 5 and 6 are 0 already; retained values "0" arrive right after MQTT connect
+	SELFTEST_ASSERT_CHANNEL(6, 0);
+	SIM_SendFakeMQTTRawChannelSet(6, "0");
+	SIM_SendFakeMQTTRawChannelSet(5, "0");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	Sim_RunSeconds(4.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 02 00 01 04 06");
+	CMD_ExecuteCommand("uartFakeHex 55 AA 00 02 00 00 01", 0);
+	Sim_RunSeconds(5.0f, false);
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6D 01 00 01 00 7C");
+	SELFTEST_ASSERT_HAS_SENT_UART_STRING("55 AA 00 09 00 05 6B 04 00 01 00 7D");
+	SELFTEST_ASSERT_HAS_UART_EMPTY();
+}
 void Test_TuyaMCU_BatteryPowered() {
+	Test_MQTT_EmptyChannelSetIgnored();
+	Test_TuyaMCU_BatteryPowered_RetainedZeroIsSent();
 	Test_TuyaMCU_SetDpCommand();
 	Test_TuyaMCU_BatteryPowered_PendingWrites();
 	Test_TuyaMCU_BatteryPowered_Style2();

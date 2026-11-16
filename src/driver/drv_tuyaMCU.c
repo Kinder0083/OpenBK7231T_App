@@ -254,6 +254,22 @@ enum TuyaMCUV0State {
 	TM0_STATE_AWAITING_STATES,
 };
 static byte g_tuyaBatteryPoweredState = 0;
+
+// Low-power (tmSensor) mode: DP writes requested before the MCU accepts states
+// (e.g. retained MQTT values arriving right after connect) wait here.
+// One slot per dpID, the latest value wins, slots are sent in request order.
+#define TUYAMCU_PENDING_DP_MAX 8
+#define TUYAMCU_PENDING_DP_DATA_MAX 8
+typedef struct tuyaMCUPendingDP_s {
+	byte used;
+	byte id;
+	byte type;
+	byte len;
+	byte data[TUYAMCU_PENDING_DP_DATA_MAX];
+} tuyaMCUPendingDP_t;
+static tuyaMCUPendingDP_t g_tuyaMCU_pendingDP[TUYAMCU_PENDING_DP_MAX];
+// true while a value reported by the MCU is being applied to a channel
+static bool g_tuyaMCU_applyingMapping = false;
 static byte g_hello[] = { 0x55, 0xAA, 0x00, 0x01, 0x00, 0x00, 0x00 };
 //static byte g_request_state[] = { 0x55, 0xAA, 0x00, 0x02, 0x00, 0x01, 0x04, 0x06 };
 static bool g_tuyaMCU_batteryPoweredMode = false;
@@ -500,9 +516,51 @@ int TuyaMCU_AppendStateInternal(byte *buffer, int bufferMax, int currentLen, uin
 	memcpy(buffer + (currentLen + 4), value, dataLen);
 	return currentLen + 4 + dataLen;
 }
+static void TuyaMCU_QueuePendingDP(uint8_t id, uint8_t type, const void* value, int dataLen) {
+	int i;
+	int freeSlot = -1;
+	for (i = 0; i < TUYAMCU_PENDING_DP_MAX; i++) {
+		if (g_tuyaMCU_pendingDP[i].used && g_tuyaMCU_pendingDP[i].id == id) {
+			freeSlot = i;
+			break;
+		}
+		if (!g_tuyaMCU_pendingDP[i].used && freeSlot == -1) {
+			freeSlot = i;
+		}
+	}
+	if (freeSlot == -1) {
+		addLogAdv(LOG_ERROR, LOG_FEATURE_TUYAMCU, "Pending DP queue full, dropping dpId %i", id);
+		return;
+	}
+	g_tuyaMCU_pendingDP[freeSlot].used = 1;
+	g_tuyaMCU_pendingDP[freeSlot].id = id;
+	g_tuyaMCU_pendingDP[freeSlot].type = type;
+	g_tuyaMCU_pendingDP[freeSlot].len = dataLen;
+	memcpy(g_tuyaMCU_pendingDP[freeSlot].data, value, dataLen);
+	addLogAdv(LOG_INFO, LOG_FEATURE_TUYAMCU, "Queued write of dpId %i until MCU accepts states", id);
+}
+static bool TuyaMCU_SendNextPendingDP() {
+	int i;
+	uint16_t payload_len;
+	for (i = 0; i < TUYAMCU_PENDING_DP_MAX; i++) {
+		if (g_tuyaMCU_pendingDP[i].used) {
+			payload_len = TuyaMCU_AppendStateInternal(g_tuyaMCUpayloadBuffer, g_tuyaMCUpayloadBufferSize, 0,
+				g_tuyaMCU_pendingDP[i].id, g_tuyaMCU_pendingDP[i].type, g_tuyaMCU_pendingDP[i].data, g_tuyaMCU_pendingDP[i].len);
+			g_tuyaMCU_pendingDP[i].used = 0;
+			TuyaMCU_SendCommandWithData(TuyaMCU_GetSetDpCommand(), g_tuyaMCUpayloadBuffer, payload_len);
+			return true;
+		}
+	}
+	return false;
+}
 void TuyaMCU_SendStateInternal(uint8_t id, uint8_t type, void* value, int dataLen)
 {
 	uint16_t payload_len = 0;
+	if (DRV_IsRunning("tmSensor") && g_tuyaBatteryPoweredState != TM0_STATE_AWAITING_STATES
+		&& dataLen <= TUYAMCU_PENDING_DP_DATA_MAX) {
+		TuyaMCU_QueuePendingDP(id, type, value, dataLen);
+		return;
+	}
 	
 	payload_len = TuyaMCU_AppendStateInternal(g_tuyaMCUpayloadBuffer, g_tuyaMCUpayloadBufferSize,
 		payload_len, id, type, value, dataLen);
@@ -1191,7 +1249,9 @@ void TuyaMCU_ApplyMapping(tuyaMCUMapping_t* mapping, int dpID, int value) {
 
 	mapping->prevValue = mappedValue;
 
+	g_tuyaMCU_applyingMapping = true;
 	CHANNEL_Set(mapping->channel, ((mappedValue + mapping->delta) * mapping->mult), 0);
+	g_tuyaMCU_applyingMapping = false;
 }
 
 bool TuyaMCU_IsChannelUsedByTuyaMCU(int channel) {
@@ -1220,6 +1280,14 @@ void TuyaMCU_OnChannelChanged(int channel, int iVal) {
 		iVal = !iVal;
 	}
 
+	if (DRV_IsRunning("tmSensor")) {
+		// low-power MCU: OBK channel values are not authoritative (they start at 0 on
+		// every wake), so every explicit write is forwarded; only values reported by
+		// the MCU itself must never be echoed back.
+		if (g_tuyaMCU_applyingMapping) {
+			return;
+		}
+	} else
 	// this might be a callback from CHANNEL_Set in TuyaMCU_ApplyMapping. If we should set exactly the
 	// same value, skip it
 	if (mapping->prevValue == iVal) {
@@ -2593,6 +2661,10 @@ void TuyaMCU_RunStateMachine_BatteryPowered() {
 		break;
 	case TM0_STATE_AWAITING_STATES:
 		if (g_tuyaNextRequestDelay <= 0) {
+			if (TuyaMCU_SendNextPendingDP()) {
+				g_tuyaNextRequestDelay = 2;
+				break;
+			}
 			if (g_tuyaMCUBatteryAckDelay > 0) {
 				g_tuyaMCUBatteryAckDelay--;
 				break;
@@ -2795,6 +2867,8 @@ void TuyaMCU_Init()
 	g_resetWiFiEvents = 0;
 	g_tuyaNextRequestDelay = 1;
 	g_tuyaMCU_setDpCmd = TUYA_CMD_SET_DP;
+	memset(g_tuyaMCU_pendingDP, 0, sizeof(g_tuyaMCU_pendingDP));
+	g_tuyaMCU_applyingMapping = false;
 	g_tuyaBatteryPoweredState = 0;
 	g_tuyaMCUConfirmationsToSend_0x05 = 0;
 	g_tuyaMCUConfirmationsToSend_0x08 = 0;
